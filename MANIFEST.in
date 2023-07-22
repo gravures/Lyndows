@@ -1,0 +1,6 @@
+exclude .gitignore
+exclude .gitattributes
+exclude main.py
+exclude texdiag-08-2021.exe
+prune textures
+global-exclude *.py[cod]

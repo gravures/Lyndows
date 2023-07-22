@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=52", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lyndows"
+description = "Wine utility library."
+authors = [{name = "Gilles Coissac", email = "gilles@ideographe.fr"}]
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.7"
+dependencies = []
+keywords = ['wine', 'proton']
+classifiers = [
+    "Development Status :: 1 - Dev",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development",
+    "Topic :: Utilities"
+]
+dynamic = ["version"]
+
+[project.urls]
+Source = "https://github.com/gravures/lyndows"
+
+[project.optional-dependencies]
+
+[tool.setuptools_scm]
+write_to = "src/lyndows/_version.py"
+root = "."
+version_scheme = "guess-next-dev"
+local_scheme = "no-local-version"
+
+[tool.setuptools]
+platforms = ["linux", "osx", "windows"]
+
+[tool.setuptools.packages.find]
+where = ["src"] 
