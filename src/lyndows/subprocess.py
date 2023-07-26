@@ -17,20 +17,26 @@
 #       Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #       MA 02110-1301, USA.
 #
-import os
-import subprocess
-import shlex
-from pathlib import Path
 import logging
+import os
+import shlex
+import subprocess
+from pathlib import Path
 
 from lyndows import wine
 
 logger = logging.getLogger(__name__)
 
 
-#
+def command(*args, **kwargs):
+    cp = subprocess.run(
+        args, encoding="UTF-8", shell=False, capture_output=True, text=True, **kwargs
+    )
+    ret = cp.stdout + cp.stderr
+    return ret
+
+##
 # External process handling
-#
 class EProcess:
     def __init__(self, program, *args, env={}):
         if isinstance(program, wine.Executable):
@@ -60,7 +66,7 @@ class EProcess:
         return self._arguments
     
     def compile_args(self):
-        return shlex.join(self.program.get_command() + self._arguments)
+        return shlex.join(self.program.command + self._arguments)
 
     def run(self, isolation=False, text=True, **kwargs):
         if self._process is not None:
@@ -73,13 +79,13 @@ class EProcess:
         _env = dict()
         if not isolation:
             _env |= os.environ
-        _env |= self.program.get_env()
+        _env |= self.program.env
         _env |= self.env
 
         codec = "UTF-8" if text else None
 
-        logger.debug("ENVIRON: %s\n" % _env)
-        logger.debug("E-PROCESS: %s\n" % str(args))
+        # logger.debug(f"ENVIRON: {_env}\n")
+        # logger.debug(f"E-PROCESS: {args}\n")
 
         cp = subprocess.run(
             args,
@@ -97,14 +103,14 @@ class EProcess:
         if self._process is not None:
             raise RuntimeError("This EProcess is already running.")
         
-        args = self.program.get_command() + self._arguments
+        args = self.program.command + self._arguments
         for arg in ('args', 'env', 'text', 'shell'):
             kwargs.pop(arg, None)
 
         _env = dict()
         if not isolation:
             _env |= os.environ
-        _env |= self.program.get_env()
+        _env |= self.program.env
         _env |= self.env
 
         codec = "UTF-8" if text else None
@@ -137,3 +143,48 @@ class EProcess:
             self._process.kill()
         if self._process.poll() is None:
             self._process = None
+
+
+class BaseHook():
+    def __init__(self, context=None):
+        self.context = context
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+        return False
+
+
+class Launcher():
+    def __init__(
+        self, context, exe, *args,
+        use_proton=False, proton_mode='runinprefix', use_steam=False,
+        hook=None, isolation=False, textmode=True, prepend_command=None
+    ):
+        wine.WineContext.register(context)
+        self.exe = wine.Executable(exe, context)
+        self.exe.use_proton(use_proton, mode=proton_mode)
+        self.exe.use_steam(use_steam)
+        self.exe.prepend_command(prepend_command)
+        self.process = EProcess(self.exe)
+        self.process.set_arguments(*args)
+        self.hook = hook if hook is not None else BaseHook()
+        self.isolation = isolation
+        self.textmode = textmode
+
+    def run(self, nowait=False):
+        if not nowait:
+            with self.hook:
+                cp = self.process.run(self.isolation, self.textmode)
+                print(cp.stderr)
+                print(cp.stdout)
+        else:
+            with self.hook:
+                self.process.popen(self.isolation, self.textmode)
+
+    def get_command(self):
+        return self.process.compile_args()
+    
+    def finished(self):
+        return False if self.process.poll() is None else True
