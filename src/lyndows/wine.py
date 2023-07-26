@@ -18,255 +18,108 @@
 #       MA 02110-1301, USA.
 #
 # pylint: disable='no-member'
-import sys
-import importlib
-from pathlib import Path, PureWindowsPath
-import subprocess
-import shlex
-import time
-import logging
-import chardet
-import copy
+from __future__ import annotations
 
+import logging
+from pathlib import Path
+
+from lyndows.confighelper import BaseHelper
+from lyndows.dist import Dist, Prefix
+from lyndows.fileutil import FilePath, is_win32exec
+from lyndows.system import on_windows
 
 logger = logging.getLogger(__name__)
 
 
-dist_commands = [
-    "winecfg", "uninstaller", "regedit", "winetricks",
-    "wineconsole", "notepad", "winefile",
-    "taskmgr", "control", "msiexec"
-]
-
-
-def on_windows():
-    return sys.platform in ["win32", "cygwin"]
-
-
-def open_guess_encoding(path):
-    detector = chardet.universaldetector.UniversalDetector()
-    path = get_native_path(path)
-    with open(path, "rb") as f:
-        for line in f.readlines():
-            detector.feed(line)
-            if detector.done:
-                break
-    detector.close()
-    return detector.result["encoding"]
-
-
-def get_native_path(path):
-    path = subprocess.check_output(
-        ["winepath", "-u", str(path)], encoding="UTF-8", shell=False
-    )
-    return Path(path.strip()).resolve()
-
-
-def get_windows_path(path):
-    path = subprocess.check_output(
-        ["winepath", "-w", str(path)], encoding="UTF-8", shell=False
-    )
-    return PureWindowsPath(path.strip())
-
-
-def check_executable(path):
-    path = Path(path).expanduser().resolve()
-    if not on_windows():
-        if str(path.name) in dist_commands:
-            return path.name
-        path = get_native_path(path)
-    
-    if all([
-        path.is_file(), 
-        #FIXME: os.access(path, os.X_OK), 
-        path.suffix == ".exe"
-    ]):
-        return path
-    return None
-
-
-def killall(self, context=None):
-    """Kill all processes running inside the wineprefix.
-    """
-    if context is None:
-        context = WineContext.context()
-    if not isinstance(context, WineContext):
-        raise ValueError()
-    subprocess.check_output(
-        ["wineboot", "0"], 
-        encoding="UTF-8", 
-        shell=False, 
-        env=dict(WINEPREFIX=context.WINEPREFIX)
-    )
-
-
-proton = None
-def import_proton(protonpath):
-    global proton
-    if not proton:
-        sys.path.append(str(protonpath))
-        importlib.machinery.SOURCE_SUFFIXES.append("")
-        proton = importlib.import_module("proton")
-    return proton
-
-
-class WineContext:
+class WineContext(BaseHelper):
     __context = set()
     __default = None
-    __default_dist = None
-    __slots__ = ("_dist", "_is_proton", "__dict__")
+    __slots__ = ("_prefix", "_dist")
 
-    def __init__(self, dist=None, prefix=None, **kwargs):
-        # Verify dist & prefix
-        if not (dist and prefix):
-            raise ValueError("dist and prefix arguments are mandatory.")
-        dist = Path(dist).expanduser().resolve()
-        prefix = Path(prefix).expanduser().resolve()
-        if not (dist.exists() and prefix.exists()):
-            raise NotADirectoryError(
-                "One are all of the required path are not valid directory."
-            )
-        self.WINEPREFIX = prefix
+    def __init__(self, dist: FilePath, prefix: FilePath, **kwargs) -> None:
+        super().__init__(dist=dist, prefix=prefix)
 
-        # Guess the wine path
-        if (dist / "bin").is_dir():
-            self.WINEDIST = dist
-            self._is_proton = False
-        elif (dist / "files").is_dir() and (dist / "proton").is_file():
-            self.WINEDIST = dist / "files"
-            self._is_proton = True
-        elif (dist / "dist").is_dir() and (dist / "proton").is_file():
-            self.WINEDIST = dist / "dist"
-            self._is_proton = True
-        else:
-            raise AttributeError("Could not determin a correct Wine Distribution")
-        self._dist = dist
+        self._dist = Dist(dist)
+        self._prefix = Prefix(prefix)
 
-        # KWARGS STUFF
-        kwargs.pop('WINEDIST', None)
-        self.WINELOADER = Path(
-            kwargs.get(
-                "WINELOADER",
-                self.WINEDIST
-                / "bin"
-                / ("wine64" if (self.WINEDIST / "bin/wine64").exists() else "wine"),
-            )
+        self._protected = (
+            'WINEDIST', 'WINELOADER', 'WINEPREFIX', 'WINESERVER', 'WINEARCH'
         )
-        self.WINESERVER = Path(
-            kwargs.get("WINESERVER", self.WINEDIST / "bin/wineserver")
-        )
-        self.__dict__ |= kwargs
 
-    def copy(self):
-        prefix = self.WINEPREFIX.parent if self._is_proton else self.WINEPREFIX
-        duply = WineContext(
-            self._dist, 
-            prefix, 
-            WINELOADER=self.WINELOADER, 
-            WINESERVER=self.WINESERVER
-        )
-        for k, v in self.__dict__.items():
-            duply.__dict__[k] = copy.copy(v)
-        return duply
+        # base environement variables
+        self._lock = False
+        self.WINEDIST = self.dist.winedist
+        self.WINELOADER = self.dist.loader
+        self.WINEPREFIX = self.prefix.pfx
+        self.WINESERVER = self.dist.server
+        self.WINEARCH = ""
+        self._lock = True
 
-    def update(self, other):
-        if isinstance(other, WineContext):
-            other = other.__dict__
-        self.__dict__.update(other)
-
-    def get(self, key, default=""):
-        return self.__dict__.get(key, default)
-    
-    def has(self, key):
-        return key in self.__dict__
-
-    def start_server(self):
-        #FIXME: dont work at all!!
-        env = {"WINEPREFIX": self.WINEPREFIX}
-        logger.debug(f"start wineserver {self.get_server()} in {self.WINEPREFIX}")
-        args = [self.get_server(), "--persistent=10"]
-        args = shlex.join(args)
-        subprocess.run(args, env=env, shell=True)
-        time.sleep(2)
-
-    def get_server(self):
-        return self.WINESERVER
-
-    def get_wine(self):
-        return self.WINELOADER
-
-    def is_proton(self):
-        return self._is_proton
-
-    def get_proton(self):
-        return self.WINEDIST.parent / 'proton' if self._is_proton else None
-
-    def get_env(self):
-        _env = self._format_env()
-        for k, v in _env.items():
-            if isinstance(v, list):
-                if k == "WINEDLLOVERRIDES":
-                    _env["WINEDLLOVERRIDES"] = ";".join([str(p) for p in v])
-                else:
-                    _env[k] = ":".join([str(p) for p in v])
-            else:
-                _env[k] = str(v)
-        return _env
-
-    def _format_env(self):
-        #TODO: more
-        _env = dict(self.__dict__)
-
-        if self.get("WINEPATH"):
-            _env["WINEPATH"] = self.get("WINEPATH")
-
-        _env["WINEDLLPATH"] = self.get("WINEDLLPATH", []) + [
+        # some default
+        self.WINEPATH = ""
+        self.WINEDLLPATH = [
             self.WINEDIST / "lib64" / "wine",
             self.WINEDIST / "lib" / "wine"
         ]
+        self.WINEDLLOVERRIDES = []
+        self.PATH = [self.WINEDIST / "bin", "/usr/bin", "/bin"]
+        self.LD_LIBRARY_PATH = [self.WINEDIST / "lib64", self.WINEDIST / "lib"]
+        self.TERM = "xterm"
+        self.WINEDEBUG = "-all,-fixme,-server"
 
-        if self.get("WINEDLLOVERRIDES"):
-            _env["WINEDLLOVERRIDES"] = self.get("WINEDLLOVERRIDES")
+        # now merge dict
+        self.update(kwargs)
 
-        _env["LD_LIBRARY_PATH"] = [
-            self.WINEDIST / "lib64/",
-            self.WINEDIST / "lib/",
-        ] + self.get("LD_LIBRARY_PATH", [])
+    def env_hook(self, env: dict) -> dict:
+        proxy = dict(env)
+        for name, value in proxy.items():
+            if name == 'ESYNC':
+                env["WINEESYNC"] = int(value)
+                if self.is_proton:
+                    env["PROTON_NO_ESYNC"] = 1 - int(value)
+                del env[name]
+            elif name == 'FSYNC':
+                env["WINEFSYNC"] = int(value)
+                if self.is_proton:
+                    env["PROTON_NO_FSYNC"] = 1 - int(value)
+                del env[name]
+            elif name == 'LARGE_ADDRESS_AWARE':
+                env["WINE_LARGE_ADDRESS_AWARE"] = int(value)
+                if self.is_proton:
+                    env["PROTON_FORCE_LARGE_ADDRESS_AWARE"] = int(value)
+                del env[name]
+            elif name == "WINEDLLOVERRIDES":
+                env["WINEDLLOVERRIDES"] = ";".join([str(p) for p in value])
+        return env
 
-        _env["PATH"] = self.get("PATH", []) + [
-            self.WINEDIST / "bin",
-            "/usr/bin",
-            "/bin",
-        ]
-
-        if "ESYNC" in self.__dict__:
-            _env["WINEESYNC"] = self.ESYNC
-            if self._is_proton:
-                _env["PROTON_NO_ESYNC"] = 1 - int(self.ESYNC)
-            del _env["ESYNC"]
-
-        if "FSYNC" in self.__dict__:
-            _env["WINEFSYNC"] = self.FSYNC
-            if self._is_proton:
-                _env["PROTON_NO_FSYNC"] = 1 - int(self.FSYNC)
-            del _env["FSYNC"]
-
-        if "LARGE_ADDRESS_AWARE" in self.__dict__:
-            _env["WINE_LARGE_ADDRESS_AWARE"] = self.LARGE_ADDRESS_AWARE
-            if self._is_proton:
-                _env["PROTON_FORCE_LARGE_ADDRESS_AWARE"] = self.LARGE_ADDRESS_AWARE
-            del _env["LARGE_ADDRESS_AWARE"]
-
-        _env["TERM"] = self.get("TERM", "xterm")
-
-        # Logs defaults all to none
-        _env["WINEDEBUG"] = self.get("WINEDEBUG", "-all,-fixme,-server")
-        _env["DXVK_LOG_LEVEL"] = self.get("DXVK_LOG_LEVEL", "none")
-        _env["PROTON_LOG"] = self.get("PROTON_LOG", "0")
-        return _env
-
+    @property
+    def dist(self) -> Dist:
+        """Returns the wine dist associated with this context.""" 
+        return self._dist
+    
+    @property
+    def prefix(self) -> Prefix:   
+        """Returns the prefix associated with this context."""     
+        return self._prefix 
+    
+    @property
+    def is_proton(self) -> bool:
+        """Returns whether the wine dist associated
+        with this context is a proton one.
+        """
+        return self.dist.is_proton
+    
     @classmethod
     def register(cls, ctx):
+        """Register a WineContext instance with the class.
+
+        Parameters:
+            - ctx (WineContext): The WineContext instance to be registered.
+
+        Raises:
+            TypeError: If the argument 'ctx' is not an instance 
+            of lyndows.wine.WineContext.
+        """
         if isinstance(ctx, WineContext):
             cls.__context.add(ctx)
             cls.__default = ctx
@@ -277,6 +130,15 @@ class WineContext:
 
     @classmethod
     def unregister(cls, ctx):
+        """Unregisters a WineContext from the class.
+
+        Parameters:
+            ctx (WineContext): The WineContext instance to unregister.
+
+        Raises:
+            TypeError: If the 'ctx' argument is not an instance 
+            of lyndows.wine.WineContext.
+        """
         if isinstance(ctx, WineContext):
             cls.__context.discard(ctx)
             if cls.__default is ctx:
@@ -292,46 +154,36 @@ class WineContext:
             )
 
     @classmethod
-    def default_dist(cls):
-        if cls.__default_dist:
-            return cls.__default_dist
+    def default_context(cls) -> WineContext | None:
+        """Returns a default context object.
 
-        wine = subprocess.check_output(
-            ["whereis", "-b", "wine"], encoding="UTF-8", shell=False
-        )
-        wine = wine.split(":")
-        if wine[1].strip():
-            wine = wine[1].split(" ")
-            for w in wine:
-                w = Path(w).resolve()
-                dist = w.parent.parent
-                if all(
-                    [
-                        (dist / "bin").is_dir(),
-                        (dist / "lib").is_dir(),
-                        (dist / "share").is_dir(),
-                        (dist / "bin" / "wine").is_file(),
-                        (dist / "bin" / "wineserver").is_file(),
-                    ]
-                ):
-                    cls.__default_dist = dist
-                    return dist
-        return None
+        This class method tries to instantiate a WineContext with a default winedist 
+        found on the systemas returned by Dist.default() and a default prefix as 
+        returned by Prefix.default(). This will succed only if Dist.default() and
+        Prefix.default() are both None
 
-    @classmethod
-    def default_context(cls):
-        if cls.default_dist():
-            prefix = None
-            if (Path.home / ".wine64").is_dir():
-                prefix = Path.home / ".wine64"
-            elif (Path.home / ".wine").is_dir():
-                prefix = Path.home / ".wine"
+        Returns: 
+            WineContext | None: An instance of a WineContext or `None` if it's failed.
+        """
+        dist = Dist.default()
+        if dist is not None:
+            prefix = Prefix.default()
             if prefix:
-                return cls(cls.default_dist(), prefix)
+                return cls(dist, prefix)
         return None
 
     @classmethod
-    def context(cls):
+    def context(cls) -> WineContext | None:
+        """Get the default registred context.
+
+        The default registred context is the last one that has been registred. 
+        If there is no such context this method will call the `default_context` 
+        method trying to get a context representing the default wine distribution
+        for this system associated to a default wine prefix (eg: ~/.wine)
+
+        Returns:
+            WineContext | None: The default context if successful, `None` otherwise.
+        """
         if cls.__default is None:
             ctx = cls.default_context()
             if ctx:
@@ -339,96 +191,91 @@ class WineContext:
         return cls.__default
 
 
+class Session():
+    def __init__(self) -> None:
+        pass
 
 
-class Executable:
-    def __init__(self, exe, context=None):
-        self.exe = check_executable(exe)
-        if self.exe is None:
-            raise ValueError(f"{exe} is not a valid executable.")
+class Executable():
+    __slots__ = (
+        '_exe', '_use_proton', '_use_steam', '_proton_mode', 
+        '_prepend_command', 'context'
+    )
 
+    def __init__(self, exe: FilePath, context: WineContext=None) -> None:
+        _exe = exe
         if not on_windows():
             self.context = context if context is not None else WineContext.context()
             if self.context is None:
                 raise RuntimeError("No valid WineContext was found.")
+            exe = self.context.prefix.get_native_path(exe)
+            logger.debug(f"exe: {exe}")
+            exe = self.context.dist.check_executable(exe)
         else:
             self.context = None
+            exe = exe if is_win32exec(exe) else None
+        if exe is None:
+            raise ValueError(f"{_exe} is not a valid executable.")
+
+        self._exe = exe
         self._use_proton = False
         self._use_steam = False
         self._proton_mode = 'runinprefix'
         self._prepend_command = None
 
-    def use_proton(self, usage=True, mode='runinprefix'):
-        self._use_proton = bool(usage) if self.context.is_proton() else False
+    def use_proton(self, usage: bool=True, mode: str='runinprefix') -> None:
+        self._use_proton = bool(usage) if self.context.is_proton else False
         if self._use_proton:
-            if self.context.WINEPREFIX.name == "pfx":
-                self.context.STEAM_COMPAT_DATA_PATH = self.context.WINEPREFIX.parent
-            else:
-                self.context.STEAM_COMPAT_DATA_PATH = self.context.WINEPREFIX
-            #NOTE: proton expect 'wine' and append '64' after, so reset it as simply 'wine'
-            self.context.WINELOADER = self.context.WINELOADER.with_name('wine')
+            self.context.STEAM_COMPAT_DATA_PATH = self.context.prefix.root
+            #NOTE: proton expect 'wine' and append '64' after, 
+            # so reset it as simply 'wine', ugly but....
+            self.context.__dict__['WINELOADER'] = (
+                f"{self.context.dist.winedist}/bin/wine"
+            )
             if mode in ('runinprefix', 'run'):
                 self._proton_mode = mode    
 
-    def use_steam(self, usage=True):     
+    def use_steam(self, usage: bool=True) -> None:     
         self._use_steam = bool(usage)       
 
-    def prepend_command(self, command=None):
+    def prepend_command(self, command: FilePath=None) -> None:
         #TODO: verify command
         self._prepend_command = command
 
     def get_path(self, path):
-        return get_windows_path(path) if self.context else path
+        return self.context.prefix.get_windows_path(path) if self.context else path
 
-    def get_exe(self):
-        return self.exe
+    @property
+    def exe(self) -> Path:
+        return self._exe
 
-    def get_env(self):
-        return self.context.get_env() if self.context else {}
+    @property
+    def env(self) -> dict[str:str]:
+        return self.context.env if self.context else {}
 
-    def get_wine(self):
-        return self.context.get_wine() if self.context else None
+    @property
+    def wine(self) -> Path | None:
+        return self.context.dist.loader if self.context else None
 
-    def get_command(self):
+    @property
+    def command(self) -> list:
         # [<command>, [<wine> | <proton>, [<runinprefix> | <run>]], <steam.exe>, <exe>]
         cmd = []
         if self.context:
             if self._prepend_command:
                 cmd.append(str(self._prepend_command))
             if not self._use_proton:
-                cmd.append(str(self.context.get_wine()))
+                cmd.append(str(self.context.dist.loader))
             else:
-                cmd.append(str(self.context.get_proton()))
+                cmd.append(str(self.context.dist.proton))
                 cmd.append(self._proton_mode)
             if self._use_steam and not self._use_proton:
                 cmd.append('c:\\windows\\system32\\steam.exe')
-        cmd.append(str(self.exe))
+        cmd.append(str(self._exe))
         return cmd
     
-    # def _proton_init(self):
-    #     import_proton(self.context.WINEDIST)
-    #     _proton = proton.Proton(str(self.context.WINEDIST))
-    #     _proton.cleanup_legacy_dist()
-    #     proton.g_proton = _proton
-
-    #     # set environement variables
-    #     tmp_env = dict(os.environ)  # save env for restore later
-    #     os.environ |= self.context.get_env()
-
-    #     proton.CompatData(str(self.context.WINEPREFIX.removesuffix("/pfx")))
-    #     _session = proton.Session()
-    #     _session.init_wine()
-
-    #     if _proton.missing_default_prefix():
-    #         _proton.make_default_prefix()
-    #     _session.init_session(False)
-
-    #     self.context.__dict__ |= _session.env
-    #     os.environ = tmp_env
-    #     self.context.WINELOADER = Path(_proton.wine64_bin)
-
     def __repr__(self):
-        return str(self.exe)
+        return str(self._exe)
 
     def __str__(self):
         return self.__repr__()

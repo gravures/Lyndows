@@ -78,9 +78,10 @@ def is_win32exec(path: FilePath) -> bool:
     """
     path = Path(path).resolve()
     if path.is_file():
-        if path.suffix.capitalize() in (
-            'COM', 'EXE', 'BAT', 'CMD', 'VBS', 'VBE', 
-            'JS', 'JSE', 'WSF', 'WSH', 'MSC'
+        # logger.debug(f"path: {path} - suffix: {path.suffix.upper()}")
+        if path.suffix.upper() in (
+            '.COM', '.EXE', '.BAT', '.CMD', '.VBS', '.VBE', 
+            '.JS', '.JSE', '.WSF', '.WSH', '.MSC'
         ):
             return True
     return False
