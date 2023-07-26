@@ -20,11 +20,14 @@
 from __future__ import annotations
 
 import copy
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
 from lyndows.fileutil import FilePath
+
+logger = logging.getLogger(__name__)
 
 
 class BaseHelper():
@@ -134,6 +137,7 @@ class BaseHelper():
 
     def _append_list(self, key, values_list):
         if key in self.__dict__:
+            logger.debug(f"KEY: {key} - VALUES: {values_list}")
             self.__dict__[key] += values_list
         else:
             self.__dict__[key] = values_list
@@ -162,16 +166,13 @@ class BaseHelper():
                 _env[k] = str(v)
         return _env
         
-    def dump(self) -> str:
-        """Generates a string representation of the environment variables.
-
-        Returns:
-            str: A string containing key-value pairs of the context's environment.
+    def dump(self) -> None:
+        """Print a string representation of the environment variables.
         """
         dump = ""
         for k, v in self.env.items():
             dump += f"{k} = {v}\n"
-        return dump
+        print(dump)
     
     def assert_file(self, path: Path) -> None:
         if not path.is_file():
@@ -184,6 +185,119 @@ class BaseHelper():
     def assert_list(self, obj: Any) -> None:
         if not isinstance(obj, list):
             raise ValueError(f"{obj} is not a list")
+        
+    def assert_library(self, libprefix: Path, libname: str) -> list[Path]:
+        self.assert_dir(libprefix)
+        try:
+            libprefix = [lib.parent for lib in libprefix.glob(f"**/*{libname}*.so")]
+        except IndexError:
+            raise ValueError(f"No {libname} library found in prefix {libprefix}")
+        else:            
+            return libprefix
+        
+    def assert_data_dir(self, libprefix: Path) -> Path:
+        while libprefix != Path('/'):
+            if (libprefix / 'share').is_dir():
+                return (libprefix / 'share')
+            libprefix = libprefix.parent  
+        raise ValueError(f"do not found data dir for prefix {libprefix}")
+
+
+class SteamHelper(BaseHelper):
+    __slots__ = ()
+
+    def __init__(self, steambase: FilePath, gameid: int, winedist: FilePath):
+        super().__init__(steambase=steambase, gameid=gameid)
+        steambase = Path(steambase)
+        self.assert_dir(steambase)
+        self.assert_dir(steambase / 'steamapps' / 'compatdata' / str(gameid))
+        winedist = Path(winedist)
+        self.assert_dir(winedist)
+
+        self.SteamGameId = gameid
+        self.SteamAppId = gameid
+        self.STEAM_COMPAT_CLIENT_INSTALL_PATH = steambase
+        self.MEDIACONV_AUDIO_DUMP_FILE = (
+            f"{steambase}/steamapps/shadercache/{gameid}/fozmediav1/audiov2.foz"
+        )
+        self.MEDIACONV_AUDIO_TRANSCODED_FILE= (
+            f"{steambase}/steamapps/shadercache/{gameid}/transcoded_audio.foz"
+        )
+        self.MEDIACONV_VIDEO_DUMP_FILE= (
+            f"{steambase}/steamapps/shadercache/{gameid}/fozmediav1/video.foz"
+        )
+        self.MEDIACONV_VIDEO_TRANSCODED_FILE= (
+            f"{steambase}/steamapps/shadercache/{gameid}/transcoded_video.foz" 
+        )
+        self.LD_LIBRARY_PATH = [
+            "/usr/lib/pressure-vessel/overrides/lib/x86_64-linux-gnu",
+            "/usr/lib/pressure-vessel/overrides/lib/x86_64-linux-gnu/aliases",
+            "/usr/lib/pressure-vessel/overrides/lib/i386-linux-gnu",
+            "/usr/lib/pressure-vessel/overrides/lib/i386-linux-gnu/aliases"
+        ]
+        self.WINEDLLOVERRIDES = ["steam.exe=b"]
+
+        # gstreamer-1.0
+        self.WINE_GST_REGISTRY_DIR = list(
+            (steambase / 'steamapps' / 'compatdata'/ 
+             str(gameid)).glob('**/gstreamer-1.0')
+        )[0]
+        self.GST_PLUGIN_SYSTEM_PATH_1_0 = list(winedist.glob("**/gstreamer-1.0"))
+        
+        # steam vulkan implicit layers
+        self.XDG_DATA_DIRS = [Path.home() / '.local' / 'share']
+
+
+class SystemHelper(BaseHelper):
+    __slots__ = ()
+
+    def __init__(
+        self, 
+        esync: bool=True,
+        fsync: bool=False,
+        large_adress_aware: bool=True,
+        term: str="xterm",
+    ):
+        super().__init__(
+            esync=esync, fsync=fsync, large_adress_aware=large_adress_aware, term=term
+        )
+        self.ESYNC = esync
+        self.FSYNC = fsync
+        self.LARGE_ADDRESS_AWARE = large_adress_aware
+        self.XTERM = term
+        self.XDG_DATA_DIRS = os.environ.get('XDG_DATA_DIRS').split(':')
+        self.XDG_RUNTIME_DIR = os.environ.get('XDG_RUNTIME_DIR')
+        self.HOME = os.environ.get('HOME')
+
+
+class VkBasaltHelper(BaseHelper):
+    __slots__ = ()
+
+    def __init__(self, vkbasalt: FilePath, config_file: FilePath=None):
+        super().__init__(vkbasalt=vkbasalt)
+        vkbasalt = self.assert_library(Path(vkbasalt), 'libvkbasalt')
+        self.LD_LIBRARY_PATH = vkbasalt
+        # for vulkan implicit layers
+        self.XDG_DATA_DIRS = [self.assert_data_dir(vkbasalt[0])]
+        #
+        self.ENABLE_VKBASALT = 1
+
+        if config_file:
+            self.assert_file(Path(config_file))
+            self.VKBASALT_CONFIG_FILE = config_file
+
+
+class LibStrangleHelper(BaseHelper):
+    __slots__ = ()
+
+    def __init__(self, libstrangle: FilePath):
+        super().__init__(libstrangle=libstrangle)
+        libstrangle = self.assert_library(Path(libstrangle), 'libstrangle')
+        self.LD_LIBRARY_PATH = libstrangle
+        # for vulkan implicit layers
+        self.XDG_DATA_DIRS = [self.assert_data_dir(libstrangle[0])]
+        # obviously
+        self.ENABLE_VK_LAYER_TORKEL104_libstrangle = 1
 
 
 class MesaHelper(BaseHelper):
@@ -195,34 +309,24 @@ class MesaHelper(BaseHelper):
         libdrm: FilePath=None,
         vkdriver: list=None
     ) -> None:
-        super().__init__()
+        super().__init__(mesalib=mesalib, libdrm=libdrm, vkdriver=vkdriver)
 
         _mesalib = Path(mesalib)
-
         if mesalib:
             mesalib = _mesalib
-            self.assert_dir(mesalib)
-            try:
-                mesalib = list(mesalib.glob("**/*mesa*.so"))[0].parent
-            except IndexError:
-                raise ValueError(f"No mesa library found in prefix {mesalib}")
-            else:
-                self.LD_LIBRARY_PATH = [mesalib]
-                self.EGL_DRIVERS_PATH = mesalib
-                self.LIBGL_DRIVERS_PATH = mesalib
-                # for vulkan implicit and explicit layers
-                self.XDG_DATA_DIRS = os.environ.get('XDG_DATA_DIRS').split(':')
-                self.XDG_DATA_DIRS = [mesalib / 'share']
+            mesalib = self.assert_library(mesalib, 'mesa')
+            self.LD_LIBRARY_PATH = mesalib
+            self.EGL_DRIVERS_PATH = mesalib[0]
+            self.LIBGL_DRIVERS_PATH = mesalib[0]
+            # for graphic pipeline vulkan extension
+            self.ANV_GPL = 'true'
+            # for vulkan implicit and explicit layers
+            self.XDG_DATA_DIRS = [self.assert_data_dir(mesalib[0])]
             
         if libdrm:
             libdrm = Path(libdrm) 
-            self.assert_dir(libdrm)
-            try:
-                libdrm = list(libdrm.glob("**/*libdrm*.so"))[0].parent
-            except IndexError:
-                raise ValueError(f"No libdrm library found in prefix {libdrm}")
-            else:
-                self.LD_LIBRARY_PATH = [libdrm]
+            libdrm = self.assert_library(libdrm, 'libdrm')
+            self.LD_LIBRARY_PATH = libdrm
             
         if vkdriver and mesalib:
             self.assert_list(vkdriver)
@@ -237,12 +341,12 @@ class MesaHelper(BaseHelper):
                     raise ValueError(f"No icd file found for driver {driver}")
                 self.VK_ICD_FILENAMES = icd
 
-        # general variables
-        self.MESA_NO_ERROR = 1
-        self.MESA_DEBUG = 'silent'
-        self.INTEL_PRECISE_TRIG = 0
 
-
+def get_dxvk_version(dist: FilePath) -> str:
+    version = Path(dist) / 'files' / 'lib64' / 'wine' / 'dxvk' / 'version'
+    with version.open('rU') as f:
+        return f.readline().split('dxvk')[1].strip()[2:-1]
+    
 
 # class DXVK_Helper(BaseHelper):
 #     __slots__ = ()
@@ -254,3 +358,68 @@ class MesaHelper(BaseHelper):
 #         self.DXVK_CONFIG_FILE = f"{HOME}/.steam/SKYRIM/conf/dxvk.conf"
 #         self.DXVK_LOG_PATH = f"{HOME}/.steam/SKYRIM/Logs"
 #         self.DXVK_LOG_LEVEL = "none"
+
+
+# def get_driver_diagnostic(mesa_lib, vk_driver, lib_drm=None):
+#     mesa = get_mesa_conf(mesa_lib, vk_driver, lib_drm)
+#     data_dir = os.environ.get('XDG_DATA_DIRS', '').split(':')
+#     data_dir.insert(0, '/usr/local/share')  # libstrangle, vkbasalt
+#     data_dir.insert(0, '/opt/mesa-22.3/share')  # implicit explicit mesa vkLayers
+#     data_dir.insert(0, '/home/gilles/.local/share')  # steam layer
+    
+#     context = wine.WineContext(
+#         dist = get_dist('GE-Proton8-6'),
+#         prefix = get_prefix('GE-Proton8-6'),
+#         # **common, 
+#         **mesa, 
+#         # **DRIVER
+#         XDG_DATA_DIRS = data_dir
+#     )
+#     env = context.get_env()
+#     sysld = os.environ.get('LD_LIBRARY_PATH', '')
+#     vkld = '/usr/local/lib/x86_64-linux-gnu:/usr/local/lib/libstrangle/lib64'
+#     mld = ':'.join(mesa['LD_LIBRARY_PATH'])
+#     env['LD_LIBRARY_PATH'] = f"{vkld}:{mld}"
+#     env['DISPLAY'] = os.environ.get('DISPLAY')
+#     env['XDG_RUNTIME_DIR'] = os.environ.get('XDG_RUNTIME_DIR')
+#     env['ANV_GPL'] = '1'
+
+#     #
+#     diagnostic = command('vulkaninfo', env=env)
+#     vkloader = command('grep', 'Vulkan Instance Version', input=diagnostic)
+#     deviceName = command('grep', 'deviceName', input=diagnostic)
+#     deviceType = command('grep', 'deviceType', input=diagnostic)
+#     driverName = command('grep', 'driverName', input=diagnostic)
+#     driverInfo = command('grep', 'driverInfo', input=diagnostic)
+#     conformanceVersion = command('grep', 'conformanceVersion', input=diagnostic)
+#     vklayer = command('grep', 'VK_LAYER', input=diagnostic)
+
+#     # vk extension stuff
+#     vkext = command('grep', 'VK_EXT_', input=diagnostic)
+#     vkext = vkext.splitlines()
+#     dxvk2_ext_required = (
+#         'VK_EXT_robustness2', 'VK_EXT_transform_feedback', 
+#         'VK_EXT_graphics_pipeline_library', 'VK_EXT_shader_module_identifier', 
+#         'VK_EXT_extended_dynamic_state3'
+#     )
+
+#     dxvk_ext = {}
+#     for e in vkext:
+#         e = e.split(':')
+#         dxvk_ext[e[0].strip()] = e[1].strip()
+#     dext = ""
+#     for e in dxvk2_ext_required:
+#         dext += f"{e} : {dxvk_ext.get(e, 'not available')}\n"
+
+#     # dxvk version
+#     d3d9_version = get_pe_version(
+#         Path(get_dist('GE-Proton8-6')) 
+#         / 'files' / 'lib64' / 'wine' / 'dxvk' / 'd3d9.dll'
+#     )
+#     dxvk_version = get_dxvk_version(get_dist('GE-Proton8-6'))
+
+#     return (
+#         f"{vkloader}{deviceName}{deviceType}{driverName}{driverInfo}"
+#         f"{conformanceVersion}\n{vklayer}\n{dext}\ndxvk version : {dxvk_version}\n" 
+#         f"d3d9 dll version : {d3d9_version}"
+#     )
