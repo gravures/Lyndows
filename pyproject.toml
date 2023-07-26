@@ -9,7 +9,7 @@ authors = [{name = "Gilles Coissac", email = "gilles@ideographe.fr"}]
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.7"
-dependencies = []
+dependencies = ['chardet', 'psutil']
 keywords = ['wine', 'proton']
 classifiers = [
     "Development Status :: 1 - Dev",
