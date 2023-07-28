@@ -17,7 +17,6 @@
 #       Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
 #       MA 02110-1301, USA.
 #
-# pylint: disable='no-member'
 from __future__ import annotations
 
 from Xlib.display import Display
@@ -30,29 +29,35 @@ def get_display_server():
     # echo $DISPLAY
     # echo $WAYLAND_DISPLAY
     # seesion = loginctl
-    return command('loginctl', 'show-session', '3', '-p', 'Type')
+    return command("loginctl", "show-session", "3", "-p", "Type")
+
 
 def get_screen_name():
     screen = Display().screen()
-    return screen.name()
+    return screen.name
+
 
 def get_display_name():
     return Display().get_display_name()
+
 
 def get_display_res():
     screen = Display().screen()
     return (screen.width_in_pixels, screen.height_in_pixels)
 
+
 def set_display_res(xres: int, yres: int) -> None:
-    command('xrandr', '-s', f"{xres}x{yres}")
+    command("xrandr", "-s", f"{xres}x{yres}")
+
 
 def set_display_scale(scale: int) -> None:
     # xrandr --output "<output>" --set "scaling mode" "<scaling mode>"
     out = Display().get_display_name()
-    out = 'eDP-1'
+    out = "eDP-1"
     command(
-        'xrandr', 
-        '--output', out, 
-        '--scale', f"{scale}x{scale}",
+        "xrandr",
+        "--output",
+        out,
+        "--scale",
+        f"{scale}x{scale}",
     )
-    
