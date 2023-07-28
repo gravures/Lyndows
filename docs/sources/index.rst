@@ -4,10 +4,10 @@
    contain the root `toctree` directive.
 
 Welcome to Lyndows's documentation!
-=================================
+===================================
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 3
    :caption: Contents:
 
    story/intro

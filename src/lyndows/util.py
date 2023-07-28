@@ -25,11 +25,10 @@ import os
 import struct
 import sys
 from pathlib import Path, PureWindowsPath
-from typing import IO, Any, Iterator, Sequence, Union
+from typing import IO, Any, Callable, Iterator, Sequence, Union
 
 import chardet
-
-from lyndows.system import unix_only
+import psutil
 
 logger = logging.getLogger(__name__)
 FilePath = Union[str, Path]  # Type Aliasing
@@ -95,6 +94,51 @@ def is_win32exec(path: FilePath) -> bool:
             ".MSC",
         )
     )
+
+
+def on_windows() -> bool:
+    """Check if the current platform is Windows.
+
+    Returns:
+        bool: True if the current platform is Windows, False otherwise.
+    """
+    # return sys.platform in ["win32", "cygwin"]
+    return psutil.WINDOWS
+
+
+def unix_only(func: Callable) -> Callable:
+    """Decorator to restrict function to run only on Unix-like platforms.
+
+    This decorator checks if the function is being executed on a Windows and raises a
+    'NotImplementedError', indicating that the method is not available on Windows.
+
+    Args:
+        func (Callable): The function to be decorated.
+
+    Returns:
+        Callable: The decorated function.
+
+    Raises:
+        NotImplementedError: If the decorated function is called on Windows.
+
+    Example:
+        >>> @unix_only
+        ... def my_unix_function():
+        ...     print("This function can only run on Unix-like platforms.")
+
+        >>> my_unix_function()
+        This function can only run on Unix-like platforms.
+
+        # If the script is running on Windows, calling the function will raise an error
+        NotImplementedError: Method not available on Windows platform
+    """
+
+    def inner(*args, **kwargs):
+        if on_windows():
+            raise NotImplementedError("Method not available on Windows platform")
+        return func(*args, **kwargs)
+
+    return inner
 
 
 @unix_only
@@ -194,9 +238,9 @@ def get_pe_version(file: FilePath) -> str | None:
 
     Note:
         - The function reads the entire file into memory, so it may not be suitable
-        for large binaries.
+          for large binaries.
         - The function returns None if the 'VS_VERSION_INFO' structure is not found
-        or if an error occurs.
+          or if an error occurs.
     """
     if not Path(file).is_file():
         raise FileNotFoundError()

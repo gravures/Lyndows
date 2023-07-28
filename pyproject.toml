@@ -44,14 +44,7 @@ platforms = ["Windows", "macOS", "Linux"]
 where = ["src"]
 
 [project.optional-dependencies]
-docs = [
-  "tomli",
-  "sphinx",
-  "furo",
-  "sphinxcontrib-apidoc",
-  "sphinx-autodoc-typehints",
-  "myst-parser",
-]
+docs = ["tomli", "sphinx", "furo", "sphinxcontrib-apidoc", "myst-parser"]
 
 [tool.mypy]
 show_error_codes = true

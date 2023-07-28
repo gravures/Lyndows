@@ -28,8 +28,7 @@ from pathlib import Path
 
 from psutil import Popen
 
-from lyndows.system import on_windows
-from lyndows.util import FilePath, is_flagexec, is_win32exec
+from lyndows.util import FilePath, is_flagexec, is_win32exec, on_windows
 from lyndows.wine.context import WineContext
 
 logger = logging.getLogger(__name__)
