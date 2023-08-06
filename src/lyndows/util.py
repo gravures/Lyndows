@@ -593,3 +593,7 @@ class EnvMapping:
     def __ne__(self, other: EnvMapping | dict[str, Any]) -> bool:
         other = other.__dict__ if isinstance(other, EnvMapping) else other
         return self.__dict__ != other
+
+    def __hash__(self) -> int:
+        # HACK:
+        return id(self)
