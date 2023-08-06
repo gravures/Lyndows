@@ -50,6 +50,8 @@ class Program:
         "_prepend_command",
         "_context",
     )
+    # TODO: find a way to make Proram class dont expose wine aware things.
+    # api in this module should be ignorant of wine.
 
     def __init__(self, exe: FilePath, context: WineContext | None = None) -> None:
         if on_windows():
@@ -77,11 +79,9 @@ class Program:
             self._use_proton = usage if self._context.is_proton else False
             if self._use_proton:
                 self._context.STEAM_COMPAT_DATA_PATH = self._context.prefix.root
-                # NOTE: proton expect 'wine' and append '64' after,
+                # HACK: proton expect 'wine' and append '64' after,
                 # so reset it as simply 'wine', ugly but....
-                self._context.__dict__[
-                    "WINELOADER"
-                ] = f"{self._context.dist.winedist}/bin/wine"
+                self._context.__dict__["WINELOADER"] = f"{self._context.dist.winedist}/bin/wine"
                 if mode in {"runinprefix", "run"}:
                     self._proton_mode = mode
 
@@ -180,6 +180,7 @@ class Process:
     def compile_args(self):
         return shlex.join(self._program.command + self._arguments)
 
+    # TODO: thinking to remove totally this one
     def run(self, isolation=False, text=True, **kwargs) -> subprocess.CompletedProcess:
         if self._process is not None or self._state != Process.STATE.NOT_STARTED:
             raise RuntimeError("This Process has already been started.")
@@ -210,6 +211,7 @@ class Process:
         self._exit_code = cp.returncode
         return cp
 
+    # TODO: remove kwargs and put all keywords args we expose
     def popen(self, isolation=False, text=True, **kwargs) -> None:
         if self._process is not None:
             raise RuntimeError("This Process is already running.")
@@ -229,9 +231,7 @@ class Process:
         codec = "UTF-8" if text else None
 
         try:
-            self._process = Popen(
-                args, env=_env, text=text, encoding=codec, shell=False, **kwargs
-            )
+            self._process = Popen(args, env=_env, text=text, encoding=codec, shell=False, **kwargs)
         except subprocess.CalledProcessError as e:
             self._process = None
             self._state = Process.STATE.STOPPED
@@ -311,17 +311,24 @@ class Process:
 
 
 class BaseHook:
-    def __init__(self, context: WineContext | None = None):
-        self.context = context
+    __slots__ = "process"
+
+    def __init__(self, process: Process):
+        if not isinstance(process, Process):
+            raise TypeError("process should be a lyndows.subprocess.Process instance.")
+        self.process = process
 
     def __enter__(self) -> BaseHook:
         return self
 
     def __exit__(self, exc_type, exc_value, exc_traceback) -> bool:
+        self.process.wait()
         return False
 
 
 class Launcher:
+    __slots__ = ("_process", "hook", "textmode", "isolation", "exe")
+
     def __init__(
         self,
         context: WineContext | None,
@@ -330,30 +337,39 @@ class Launcher:
         use_proton: bool = False,
         proton_mode: str = "runinprefix",
         use_steam: bool = False,
-        hook: BaseHook | None = None,
+        hook: type[BaseHook] | None = None,
         isolation: bool = False,
         textmode: bool = True,
         prepend_command: FilePath | None = None,
     ):
+        if hook and not issubclass(hook, BaseHook):
+            raise TypeError("hook should a class or subclass of BaseHook.")
+
         WineContext.register(context)
+
         self.exe = Program(exe, context)
         self.exe.use_proton(use_proton, mode=proton_mode)
         self.exe.use_steam(use_steam)
         self.exe.prepend_command(prepend_command)
-        self.process = Process(self.exe)
-        self.process.set_arguments(*args)
-        self.hook = hook if hook is not None else BaseHook()
+        self._process = Process(self.exe)
+        self._process.set_arguments(*args)
+
+        self.hook = hook(self.process) if hook is not None else BaseHook(self.process)
         self.isolation = isolation
         self.textmode = textmode
 
-    def run(self, nowait: bool = False) -> None:
+    def run(self, wait: bool = True) -> None:
         with self.hook:
-            if not nowait:
+            if wait:
                 cp = self.process.run(self.isolation, self.textmode)
-                print(cp.stderr)
-                print(cp.stdout)
+                logger.debug(cp.stderr)
+                logger.debug(cp.stdout)
             else:
                 self.process.popen(self.isolation, self.textmode)
+
+    @property
+    def process(self) -> Process:
+        return self.process
 
     def get_command(self) -> str:
         return self.process.compile_args()
