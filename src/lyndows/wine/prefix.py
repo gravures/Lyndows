@@ -52,8 +52,8 @@ class Prefix:
         else:
             raise AttributeError(f"Invalid Wine Prefix for {self._root}")
         self._drive_mapping = {}
-        self._update_drive_mapping()
         self._sys_mount_points = {}
+        self._update_drive_mapping()
 
     @property
     def root(self):

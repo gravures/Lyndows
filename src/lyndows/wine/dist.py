@@ -157,7 +157,7 @@ class Distribution:
             f"{home}/.steam/steam/steamapps/common/Proton",
         ):
             depot = Path(depot)
-            print(depot)
+            logger.debug(f"depot: {depot}")
             if depot.is_dir():
                 for d in depot.iterdir():
                     d.resolve()

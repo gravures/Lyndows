@@ -123,13 +123,13 @@ class WineContext(EnvMapping):
             TypeError: If the argument 'context' is not an instance
             of lyndows.wine.WineContext.
         """
-        if isinstance(cls, WineContext):
+        if isinstance(context, WineContext):
             cls.__context.add(context)
             cls.__default = context
         else:
             raise TypeError(
                 "Argument 'context' should be an instance"
-                " of lyndows.wine.WineContext"
+                f" of WineContext not of type {context.__class__}"
             )
 
     @classmethod
