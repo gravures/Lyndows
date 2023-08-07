@@ -21,11 +21,9 @@ from __future__ import annotations
 
 import os
 from collections import OrderedDict
-from pathlib import Path, PosixPath, PureWindowsPath
+from pathlib import Path
 
-import psutil
-
-from lyndows.util import FilePath, is_windows_path, mount_point
+from lyndows.util import FilePath
 
 
 class Prefix:
@@ -36,8 +34,6 @@ class Prefix:
         "_win_version",
         "_dll_overrides",
         "_arch",
-        "_drive_mapping",
-        "_sys_mount_points",
     )
 
     def __init__(self, root: FilePath) -> None:
@@ -51,9 +47,24 @@ class Prefix:
             self._pfx = self._root / "pfx"
         else:
             raise AttributeError(f"Invalid Wine Prefix for {self._root}")
-        self._drive_mapping = {}
-        self._sys_mount_points = {}
-        self._update_drive_mapping()
+
+    @classmethod
+    def validate(cls, path: FilePath) -> bool:
+        path = Path(path).absolute()
+        if not path.is_dir():
+            return False
+        for _dir in ("dosdevices", "drive_c"):
+            if not (path / _dir).is_dir():
+                return False
+        return all(
+            (path / file).is_file()
+            for file in (
+                "system.reg",
+                "user.reg",
+                "userdef.reg",
+                ".update-timestamp",
+            )
+        )
 
     @property
     def root(self):
@@ -74,83 +85,6 @@ class Prefix:
     @property
     def dll_overrides(self):
         return self._dll_overrides
-
-    @classmethod
-    def validate(cls, path: FilePath) -> bool:
-        path = Path(path).absolute()
-        if not path.is_dir():
-            return False
-        for _dir in ("dosdevices", "drive_c"):
-            if not (path / _dir).is_dir():
-                return False
-        return all(
-            (path / file).is_file()
-            for file in (
-                "system.reg",
-                "user.reg",
-                "userdef.reg",
-                ".update-timestamp",
-            )
-        )
-
-    # FIXME:resolve ../drive_c
-    def _update_drive_mapping(self):
-        devices = self._pfx / "dosdevices"
-        for dev in devices.iterdir():
-            if len(dev.name) == 2 and dev.name.endswith(":") and dev.is_symlink:
-                self._drive_mapping[str(dev.readlink())] = dev.name
-
-        self._sys_mount_points = {
-            part.mountpoint: part.device for part in psutil.disk_partitions()
-        }
-        for mnt in self._sys_mount_points:
-            self._sys_mount_points[mnt] = self._drive_mapping.get(mnt)  # type: ignore
-
-    def get_windows_path(self, path: FilePath) -> PureWindowsPath:
-        """Convert a Windows path to a native path format.
-
-        Takes a native path and converts it to the Windows
-        path format for later use in the Windows environnement.
-
-        Args:
-            path (FilePath): The native path to be converted.
-
-        Returns:
-            pathlib.PureWindowsPath: The Windows path equivalent
-            of the given native path.
-        """
-        if is_windows_path(path):
-            return PureWindowsPath(path)
-        mnt = mount_point(path)
-        drive = self._sys_mount_points.get(str(mnt))
-        path = Path(path).expanduser().absolute()
-        if drive:
-            path = path.relative_to(mnt)
-        else:
-            drive = self._sys_mount_points.get("/")
-        return PureWindowsPath(f"{drive}/{path}")
-
-    def get_native_path(self, path: FilePath) -> Path:
-        """Convert a Windows path to a native path format.
-
-        Takes a Windows path and converts it to native path format.
-
-        Args:
-            path (FilePath): The Windows path to be converted.
-
-        Returns:
-            pathlib.PosixPath: The native path equivalent
-            of the given Windows path.
-        """
-        if not is_windows_path(path):
-            return PosixPath(path)
-        path = Path(path).absolute()
-        anchor = next(
-            (mnt for mnt, drv in self._drive_mapping.items() if drv == path.drive),
-            "/",
-        )
-        # FIXME: drive letter not found case
-        return Path(anchor) / path.relative_to(Path(path.anchor))
 
     @staticmethod
     def _look_for() -> None:

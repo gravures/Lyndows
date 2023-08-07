@@ -1,12 +1,22 @@
+import subprocess
+from pathlib import Path
+
 import pytest
-from lyndows.path import UPurePosixPath
+from lyndows.path import UPurePosixPath, UPureWindowsPath
+
+
+def winepath(path: str, mode: str) -> str:
+    return subprocess.check_output(
+        ["winepath", f"-{mode}", str(path)], encoding="UTF-8", shell=False  # type: ignore
+    ).strip()
 
 
 class TestUPurePosixPath:
     def test_expanduser_with_tilde(self):
         path = UPurePosixPath("~/case")
         expanded_path = path.expanduser()
-        assert expanded_path == UPurePosixPath("/home/username/case")
+        expected_result = UPurePosixPath(Path.home() / "case")
+        assert expanded_path == expected_result
 
     def test_expanduser_without_tilde(self):
         path = UPurePosixPath("path/to/file")
@@ -20,7 +30,7 @@ class TestUPurePosixPath:
 
         # Test when the path is relative
         path = UPurePosixPath("test")
-        expected_result = UPurePosixPath("/current/working/directory").joinpath(path)
+        expected_result = UPurePosixPath(Path.cwd() / path)
         assert path.absolute() == expected_result
 
     def test_is_absolute(self):
@@ -30,7 +40,7 @@ class TestUPurePosixPath:
 
         # Test when the path is relative
         path = UPurePosixPath("test")
-        assert path.is_absolute()
+        assert not path.is_absolute()
 
     def test_joinpath(self):
         # Test joining a path with a string
@@ -53,14 +63,15 @@ class TestUPurePosixPath:
         path = UPurePosixPath("/home/user/test")
         assert not path.is_mount()
 
-    # def test_mount_point(self):
-    #     # Test getting the mount points on the system
-    #     mount_point = UPurePosixPath.mount_point()
-    #     expected_mount_point = [UPurePosixPath("/"), UPurePosixPath("/mnt")]
-    #     self.assertEqual(mount_point, expected_mount_point)
+    def test_mount_point(self):
+        # Test getting the mount points on the system
+        raise AssertionError()
 
     def test_as_windows(self):
         # Test converting a POSIX path to a Windows path
-        path = UPurePosixPath("/home/user/test")
+        _str = "/home/user/test"
+        _wstr = winepath(_str, "w")
+        path = UPurePosixPath(_str)
         windows_path = path.as_windows()
-        assert str(windows_path) == "\\home\\user\\test"
+        assert UPureWindowsPath(_wstr) == windows_path
+        # assert str(windows_path) == _wstr

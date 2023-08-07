@@ -32,17 +32,16 @@ from pathlib import (
     _WindowsFlavour,  # type: ignore
 )
 from types import FunctionType
-from typing import Any, Mapping, Union, no_type_check
+from typing import Any, Mapping, Union
 
 import psutil
 
-from lyndows.util import is_flagexec, is_win32exec, on_windows
+from lyndows.util import FilePath, is_flagexec, is_win32exec, on_windows
 from lyndows.wine.context import WineContext
+from lyndows.wine.prefix import Prefix
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
-
-FilePath = Union[str, PurePath]
 
 
 def split_drive(path: FilePath) -> tuple[str, str]:
@@ -107,7 +106,7 @@ class UMeta(type):
     def __call__(self, *args: Any, **kwds: Any) -> Any:
         if self.callby == "UPurePath":
             if on_windows():
-                return PurePath(*args, **kwds)
+                return UPureWindowsPath(*args, **kwds)
             elif args and is_windows_path(args[0]):
                 return UPureWindowsPath(*args, **kwds)
             else:
@@ -141,29 +140,30 @@ class UPurePath(PurePath, metaclass=UMeta):
     of the nature of the path or the os system.
     """
 
-    __slots__ = ("_context", "_drive_mapping", "_mount_points")
+    __slots__ = ("_winepfx", "_drive_mapping", "_mount_points")
     _sys_mount_points = {
         part.mountpoint: part.device for part in psutil.disk_partitions()
     }
 
-    def _new_context(self) -> None:
+    def _new_winepfx(self) -> None:
+        self._winepfx: Prefix | None = None
         if on_windows():
-            self._context = None
             return
-        self._context = WineContext.context()
-        if self._context is None:
-            raise EnvironmentError("Wine context not found")
-        self._drive_mapping: dict[str, str] = {}
-        self._mount_points: dict[str, str] = {}
-        self._update_drive_mapping()
+        if context := WineContext.context():
+            self._winepfx = context.prefix
+            self._drive_mapping: dict[str, str] = {}
+            self._mount_points: dict[str, str] = {}
+            self._update_drive_mapping()
+        else:
+            raise EnvironmentError("No WineContext was found")
 
     def _update_drive_mapping(self) -> None:
-        if not self._context:
+        if not self._winepfx:
             return
         # FIXME:resolve ../drive_c
         self._drive_mapping.clear()
         self._mount_points.clear()
-        devices = self._context.prefix.pfx / "dosdevices"
+        devices = self._winepfx.pfx / "dosdevices"
         for mnt in self._sys_mount_points:
             self._mount_points[mnt] = ""
         for dev in devices.iterdir():
@@ -172,6 +172,28 @@ class UPurePath(PurePath, metaclass=UMeta):
                 self._drive_mapping[dev.name] = mnt
                 if mnt in self._sys_mount_points:
                     self._mount_points[mnt] = dev.name
+
+    def expanduser(self) -> UPurePath:
+        # TODO: './~/case'
+        if self.parts and self.parts[0] == "~":
+            return self.__class__.__new__(self.__class__, Path.home(), *self.parts[1:])
+        return self
+
+    def absolute(self) -> UPurePath:
+        return (
+            self
+            if self.is_absolute()
+            else self.__class__.__new__(self.__class__, Path.cwd(), self)
+        )
+
+    def is_mount(self) -> bool:
+        return str(self.expanduser()) in self._sys_mount_points
+
+    def mount_point(self) -> UPurePath:
+        path = self.expanduser().absolute()
+        while not path.is_mount():
+            path = path.parent
+        return path
 
     def as_native(self) -> UPurePath | PurePath:
         return self
@@ -189,30 +211,8 @@ class UPurePosixPath(UPurePath):
 
     def __new__(cls, *args: FilePath) -> UPurePosixPath:
         self: UPurePosixPath = UPurePosixPath._from_parts(args)  # type: ignore
-        self._new_context()
+        self._new_winepfx()
         return self
-
-    def expanduser(self) -> UPurePosixPath:
-        # TODO: './~/case'
-        if self.parts and self.parts[0] == "~":
-            return self.__class__.__new__(self.__class__, Path.home(), *self.parts[1:])
-        return self
-
-    def absolute(self) -> UPurePosixPath:
-        return (
-            self
-            if self.is_absolute()
-            else self.__class__.__new__(self.__class__, Path.cwd(), self)
-        )
-
-    def is_mount(self) -> bool:
-        return str(self.expanduser()) in self._sys_mount_points
-
-    def mount_point(self) -> UPurePosixPath:
-        path = self.expanduser().absolute()
-        while not path.is_mount():
-            path = path.parent
-        return path
 
     def _map_parts(self) -> tuple[str, UPurePosixPath]:
         mnt = self.mount_point()
@@ -220,13 +220,16 @@ class UPurePosixPath(UPurePath):
         path = self.expanduser().absolute()
         path = path.relative_to(mnt) if drive else path
         drive = drive or self._mount_points.get("/", "")
-        return drive, path
+        return drive, path  # type: ignore
 
-    def as_windows(self) -> UPurePath | PurePath:
+    def as_windows(self) -> UPurePath:
         if on_windows():
-            return PureWindowsPath(self)
+            return UPureWindowsPath(self)
         drive, path = self._map_parts()
         return UPureWindowsPath(f"{drive}/{path}")
+
+    def as_native(self) -> UPurePath:
+        return self.as_windows() if on_windows() else self
 
 
 class UPureWindowsPath(UPurePath):
@@ -235,21 +238,19 @@ class UPureWindowsPath(UPurePath):
 
     def __new__(cls, *args: FilePath) -> UPureWindowsPath:
         self: UPureWindowsPath = UPureWindowsPath._from_parts(args)  # type: ignore
-        self._new_context()
+        self._new_winepfx()
         return self
 
-    def __getattribute__(self, attr: str) -> Any:
-        # for UWindowsPath
-        return object.__getattribute__(self, attr)
-
     def absolute(self) -> UPureWindowsPath:
+        if self.is_absolute():
+            return self
         return (
-            self
-            if self.is_absolute()
+            super().absolute()
+            if on_windows()
             else self.__class__.__new__(
                 self.__class__, self._mount_points.get("/", ""), Path.cwd(), self
             )
-        )
+        )  # type: ignore
 
     def as_native(self) -> UPurePath:
         if on_windows():
@@ -271,7 +272,7 @@ class UPosixPath(UPath):
 
     def __new__(cls, *args: FilePath, **kwargs: Any) -> UPosixPath:
         self: UPosixPath = UPosixPath._from_parts(args)  # type: ignore
-        self._new_context()
+        self._new_winepfx()
         return self
 
     def as_windows(self) -> UWindowsPath:
@@ -284,10 +285,9 @@ class UWindowsPath(UPath):
     __upath_api__: dict[str, Any] = {}
     _flavour = _wine_flavour
 
-    @no_type_check
     def __new__(cls, *args: FilePath, **kwargs: Any) -> UWindowsPath:
         self: UWindowsPath = UWindowsPath._from_parts(args)  # type: ignore
-        self._new_context()
+        self._new_winepfx()
         self.__dict__["_flavour"] = _wine_flavour
         self._uwdrive, path = split_drive(self) if args else ("", args[0])
         self._posix_path = self.as_native()

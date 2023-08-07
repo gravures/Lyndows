@@ -24,14 +24,14 @@ import logging
 import os
 import struct
 import sys
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePath, PureWindowsPath
 from typing import IO, Any, Callable, Iterator, Sequence, Union
 
 import chardet
 import psutil
 
 logger = logging.getLogger(__name__)
-FilePath = Union[str, Path]  # Type Aliasing
+FilePath = Union[str, PurePath]  # Type Aliasing
 
 
 # TODO: check this again...
@@ -446,13 +446,13 @@ class EnvMapping:
         Raises:
             ValueError: If the 'empty' parameter is not a list.
         """
-        clear = assert_type(clear, list) if clear is not None else []
+        _clear = assert_type(clear, list) if clear is not None else []
 
         if isinstance(other, EnvMapping):
             other = other.__dict__
         for key, value in other.items():
             if key not in self._protected:
-                if (key in clear) and (isinstance(self.__dict__[key], list)):
+                if (key in _clear) and (isinstance(self.__dict__[key], list)):
                     self.__dict__[key] = []
                 self.__setattr__(key, value)
 
