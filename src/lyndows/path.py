@@ -20,7 +20,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
+import shlex
 from functools import wraps
 from pathlib import (
     Path,
@@ -33,7 +35,7 @@ from pathlib import (
     _WindowsFlavour,  # type: ignore
 )
 from types import FunctionType
-from typing import Any, Mapping, Union
+from typing import Any, Mapping, Sequence, Type, Union
 
 import psutil
 
@@ -48,9 +50,9 @@ logger.setLevel(logging.DEBUG)
 def split_drive(path: FilePath) -> tuple[str, str]:
     path = str(path)
     if match := re.search(r"^\w:[/\\]", path):
-        return path[: match.end() - 1], path[match.end() - 1 :]
+        return (path[: match.end() - 1], path[match.end() - 1 :])
     else:
-        return "", path
+        return ("", path)
 
 
 def is_windows_path(path: FilePath) -> bool:
@@ -70,14 +72,7 @@ class UMeta(type):
     def __new__(
         cls, name: str, bases: tuple[type, ...], namespace: dict[str, Any], **kwargs: Any
     ) -> UMeta:
-        if name == "UPosixPath":
-            bases = (UPath, Path, PurePosixPath)
-        elif name == "UWindowsPath":
-            bases = (UPath, Path, PureWindowsPath)
-        elif name == "UWinePath":
-            bases = (UPath, Path, PureWindowsPath)
-            namespace = cls.__prepare_api__((PurePath, UPath), namespace)
-        return type.__new__(cls, name, bases, namespace, **kwargs)
+        return type.__new__(cls, name, bases, namespace)
 
     def __init__(
         self,
@@ -89,11 +84,17 @@ class UMeta(type):
         self.callby = name
 
     @classmethod
-    def __prepare_api__(
-        cls, bases: tuple[type, ...], namespace: dict[str, Any]
-    ) -> dict[str, Any]:
-        _bases = [b.__dict__ for b in bases]
-        _bases.append(namespace)  # type: ignore
+    def __prepare__(
+        cls, name: str, bases: tuple[type, ...], /, **kwargs: Any
+    ) -> Mapping[str, object]:
+        api = kwargs.pop("api", None)
+        namespace = super().__prepare__(name, bases, **kwargs)
+        if api is None:
+            return namespace
+
+        _bases = [b.__dict__ for b in api]
+        namespace["__upath_api__"] = {}  # type: ignore
+        _bases.append(namespace)
         for base in _bases:
             for name in base:
                 if type(base[name]) in (
@@ -102,57 +103,53 @@ class UMeta(type):
                     classmethod,
                     property,
                 ):
-                    namespace["__upath_api__"][name] = base[name]  # type: ignore
+                    namespace["__upath_api__"][name] = base[name]
         return namespace
-
-    @classmethod
-    def __prepare__(
-        cls, name: str, bases: tuple[type, ...], /, **kwargs: Any
-    ) -> Mapping[str, object]:
-        return super().__prepare__(name, bases, **kwargs)
-
-    def __call__(self, *args: Any, **kwds: Any) -> Any:
-        if self.callby == "UPath":
-            if on_windows():
-                return UWindowsPath(*args, **kwds)
-            elif args and is_windows_path(args[0]):
-                return UWinePath(*args, **kwds)
-            else:
-                return UPosixPath(*args, **kwds)
-        return super().__call__(*args, **kwds)
 
 
 class UPath(Path, metaclass=UMeta):
-    """PurePath offering support for Wine filesystem.
+    """Path class offering support for Wine filesystem.
 
-    Extends PurePath standard library and represents a filesystem
-    path which don't imply any actual filesystem I/O. On Posix systems,
+    Extends pathlib.Path standard library class and represents a filesystem
+    path whith actual I/O methods. On Posix systems,
     from the parts given to the constructor, try to guess the underlying
-    filesystem type returning either a UPurePosixPath or a UPureWindowsPath
-    object. On Windows always returns a PurePath object.
-    You can also instantiate either of these classes directly, regardless
-    of the nature of the path or the os system.
+    filesystem type returning either a UPosixPath or a UWinePath
+    object. On Windows always returns a UWindowsPath object.
+    You can also instantiate either of these classes directly if supported
+    by your system.
     """
 
-    __slots__ = ("_winepfx", "_drive_mapping", "_mount_points")
+    __slots__ = ("_winepfx", "_context", "_drive_mapping", "_mount_points", "_posix_path")
+    __upath_api__: dict[str, Any] = {}
     _sys_mount_points = {
         part.mountpoint: part.device for part in psutil.disk_partitions()
     }
 
-    @classmethod
-    def _from_parts(cls, args):
-        self = super()._from_parts(args)  # type: ignore
+    def __new__(cls, *args: Any, **kwargs: Any):
+        if cls is UPath:
+            if on_windows():
+                cls = UWindowsPath
+            elif args and is_windows_path(args[0]):
+                cls = UWinePath
+            else:
+                cls = UPosixPath
+
+        self = cls._from_parts(args)  # type: ignore
         if not self._flavour.is_supported:
             raise NotImplementedError(
                 "cannot instantiate %r on your system" % (cls.__name__,)
             )
+        self._new_winepfx()
+        self._posix_path = None
         return self
 
-    def _new_winepfx(self) -> None:
+    def _new_winepfx(self, context: WineContext | None = None) -> None:
         self._winepfx: Prefix | None = None
         if on_windows():
+            self._context = None
             return
         if context := WineContext.context():
+            self._context = context
             self._winepfx = context.prefix
             self._drive_mapping: dict[str, str] = {}
             self._mount_points: dict[str, str] = {}
@@ -176,70 +173,81 @@ class UPath(Path, metaclass=UMeta):
                 if mnt in self._sys_mount_points:
                     self._mount_points[mnt] = dev.name
 
+    def _map_parts(self) -> tuple[str, UPath]:
+        mnt = self.mount_point()
+        drive = self._mount_points.get(str(mnt), "")
+        path = self.expanduser().absolute()
+        path = path.relative_to(mnt) if drive else path
+        drive = drive or self._mount_points.get("/", "")
+        return drive, path
+
     def mount_point(self) -> UPath:
+        """Returns the mount point of the current path.
+
+        Returns:
+           UPath: The mount point of the current path.
+        """
+
         path = self.expanduser().absolute()
         while not path.is_mount():
             path = path.parent
         return path
 
     def as_native(self) -> UPath:
+        """Convert the current path to a native UPath object.
+
+        Returns:
+            UPath: Returns either a UPosixPath or a UWindowsPath.
+        """
+
         return self
 
     def as_windows(self) -> UPath:
+        """Convert the current path to a windows UPath object.
+
+        Returns:
+            UPath: Returns either a UWinePath or a UWindowsPath.
+        """
         return self
 
 
 UFilePath = Union[str, UPath]
 
 
-class UPosixPath(UPath):
+class UPosixPath(UPath, Path, PurePosixPath):
     __slots__ = ()
     _flavour = _posix_flavour
 
-    def __new__(cls, *args: FilePath, **kwargs: Any) -> UPosixPath:
-        self: UPosixPath = UPosixPath._from_parts(args)
-        self._new_winepfx()
-        return self
-
-    def _map_parts(self) -> tuple[str, UPosixPath]:
-        mnt = self.mount_point()
-        drive = self._mount_points.get(str(mnt), "")
-        path = self.expanduser().absolute()
-        path = path.relative_to(mnt) if drive else path
-        drive = drive or self._mount_points.get("/", "")
-        return drive, path  # type: ignore
-
     def as_windows(self) -> UWinePath:
-        drive, path = self._map_parts()  # type: ignore
+        """Convert the current path as a UWinePath object.
+
+        Returns:
+            UWinePath: Returns a UWinePath representing the current path.
+        """
+        drive, path = self._map_parts()
         return UWinePath(f"{drive}/{path}")
 
 
-class UWindowsPath(UPath):
+class UWindowsPath(UPath, Path, PureWindowsPath):
     __slots__ = ()
     _flavour = _windows_flavour
 
-    def __new__(cls, *args: FilePath, **kwargs: Any) -> UWindowsPath:
-        self: UWindowsPath = UWindowsPath._from_parts(args)
-        return self
 
+class UWinePath(UPath, Path, PureWindowsPath, api=(PurePath, UPath)):
+    """An UPath class offering support for Wine filesystem.
 
-class UWinePath(UPath):
-    __slots__ = ("_uwdrive", "_posix_path", "__dict__")
-    __upath_api__: dict[str, Any] = {}
+    Represent a windows filesystem path on Posix platforms with
+    Wine support. This class internally delegates I/O operations
+    to an UPosixPath equivalent of this path
+    """
+
+    __slots__ = ()
     _flavour = _wine_flavour
 
-    def __new__(cls, *args: FilePath, **kwargs: Any) -> UWinePath:
-        self: UWinePath = UWinePath._from_parts(args)
-        self._new_winepfx()
-        self.__dict__["_flavour"] = _wine_flavour
-        self._uwdrive, path = split_drive(self) if args else ("", args[0])
+    def __new__(cls, *args: FilePath, **kwargs: Any):
+        self = super().__new__(cls, *args, **kwargs)
         self._posix_path = self.as_native()
         return self
-
-    def __getattr__(self, attr: str) -> Any:
-        if attr in self.__slots__:
-            return None
-        raise AttributeError(attr)
 
     def __getattribute__(self, attr: str) -> Any:
         cls = object.__getattribute__(self, "__class__")
@@ -258,9 +266,21 @@ class UWinePath(UPath):
 
     @classmethod
     def home(cls) -> UWinePath:
+        """Return a new path pointing to the user's home directory
+        as a WinePath.
+
+        Returns:
+            UWinePath: A new UWinePath object pointing to the home directory.
+        """
         return UPosixPath(Path.home()).as_windows()
 
     def absolute(self) -> UWinePath:
+        """Returns a new UWinePath object that represents the absolute
+        path of the current UWinePath object.
+
+        Returns:
+            UWinePath: A new UWinePath object that represents the absolute path.
+        """
         return (
             self
             if self.is_absolute()
@@ -270,6 +290,12 @@ class UWinePath(UPath):
         )
 
     def as_native(self) -> UPosixPath:
+        """Converts the current path object as a UPosixPath.
+
+        Returns:
+            UPosixPath: A UPosixPath object representing the converted path.
+        """
+
         path = self.absolute()
         return UPosixPath(
             self._drive_mapping.get(path.drive, "/"),

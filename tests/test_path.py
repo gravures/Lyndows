@@ -2,7 +2,13 @@ import subprocess
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 
 import pytest
-from lyndows.path import UPath, UPosixPath, UWindowsPath, UWinePath
+from lyndows.path import (
+    UPath,
+    UPosixPath,
+    UWindowsPath,
+    UWinePath,
+)
+from lyndows.program import NativeProgram, Program, WineProgram
 from lyndows.util import on_windows
 
 
@@ -13,7 +19,11 @@ def winepath(path: str, mode: str) -> str:
 
 
 class TestUPath:
-    def test_new(self):
+    def test_new_a(self):
+        with pytest.raises(NotImplementedError):
+            UPath.__new__(UPath, "/home/user/test")
+
+    def test_new_b(self):
         if on_windows:
             assert isinstance(UPath("/home/user/test"), UWindowsPath)
         else:
@@ -26,9 +36,9 @@ class TestUWindowsPath:
         if not on_windows():
             with pytest.raises(NotImplementedError):
                 UPosixPath("/home/user/test")
-            return
-        path = UPosixPath("/home/user/test")
-        assert path.__class__.__mro__ == (
+
+    def test_mro(self):
+        assert UWindowsPath.__mro__ == (
             UWindowsPath,
             UPath,
             Path,
@@ -42,10 +52,10 @@ class TestUWinePath:
     def test_new(self):
         if on_windows():
             with pytest.raises(NotImplementedError):
-                UPosixPath("/home/user/test")
-            return
-        path = UWinePath("/home/user/test")
-        assert path.__class__.__mro__ == (
+                UWinePath("c:/home/user/test")
+
+    def test_mro(self):
+        assert UWinePath.__mro__ == (
             UWinePath,
             UPath,
             Path,
@@ -60,10 +70,10 @@ class TestUPosixPath:
         if on_windows():
             with pytest.raises(NotImplementedError):
                 UPosixPath("/home/user/test")
-            return
-        path = UPosixPath("/home/user/test")
-        assert path.__class__.__mro__ == (
-            UWinePath,
+
+    def test_mro(self):
+        assert UPosixPath.__mro__ == (
+            UPosixPath,
             UPath,
             Path,
             PurePosixPath,
@@ -134,3 +144,68 @@ class TestUPosixPath:
         windows_path = path.as_windows()
         assert UWinePath(_wstr) == windows_path
         # assert str(windows_path) == _wstr
+
+
+class TestProgram:
+    def test_new_a(self):
+        with pytest.raises(NotImplementedError):
+            Program.__new__(Program, "/home/user/test")
+        with pytest.raises(IOError):
+            Program()
+
+    def test_new_b(self):
+        if on_windows:
+            assert isinstance(Program("/home/user/test.exe"), NativeProgram)
+        else:
+            assert isinstance(Program("/home/user/test.exe"), WineProgram)
+            assert isinstance(Program("c:/home/user/test.exe"), WineProgram)
+            assert isinstance(Program("c:/home/user/test.sh"), NativeProgram)
+
+
+class TestNativeProgram:
+    def test_mro(self):
+        if on_windows():
+            assert NativeProgram.__mro__ == (
+                NativeProgram,
+                Program,
+                UWindowsPath,
+                UPath,
+                Path,
+                PureWindowsPath,
+                PurePath,
+                object,
+            )
+        else:
+            assert NativeProgram.__mro__ == (
+                NativeProgram,
+                Program,
+                UPosixPath,
+                UPath,
+                Path,
+                PurePosixPath,
+                PurePath,
+                object,
+            )
+
+    def test_new(self):
+        raise NotImplementedError()
+
+    #     with pytest.raises(NotImplementedError):
+    #         NativeProgram.__new__(NativeProgram, "/home/user/test")
+
+
+class TestWineProgram:
+    def test_mro(self):
+        assert WineProgram.__mro__ == (
+            WineProgram,
+            Program,
+            UWinePath,
+            UPath,
+            Path,
+            PureWindowsPath,
+            PurePath,
+            object,
+        )
+
+    def test_new(self):
+        raise NotImplementedError()
