@@ -9,7 +9,7 @@ authors = [{ name = "Gilles Coissac", email = "gilles@ideographe.fr" }]
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.8"
-dependencies = ['chardet', 'psutil']
+dependencies = ['chardet', 'psutil', 'python-xlib']
 keywords = ['wine', 'proton']
 classifiers = [
   "Development Status :: 1 - Dev",
@@ -44,7 +44,13 @@ platforms = ["Windows", "macOS", "Linux"]
 where = ["src"]
 
 [project.optional-dependencies]
-docs = ["tomli", "sphinx", "furo", "sphinxcontrib-apidoc", "myst-parser"]
+docs = [
+  "tomli",
+  "sphinx",
+  "sphinxcontrib-apidoc",
+  "myst-parser",
+  "furo @ git+https://github.com/gravures/furo.git@gravures",
+]
 test = ["pytest"]
 
 [tool.mypy]
