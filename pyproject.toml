@@ -45,9 +45,8 @@ where = ["src"]
 
 [project.optional-dependencies]
 docs = [
-  "tomli",
   "sphinx",
-  "sphinxcontrib-apidoc",
+  "sphinx-autoapi",
   "myst-parser",
   "furo @ git+https://github.com/gravures/furo.git@gravures",
 ]
