@@ -1,41 +1,47 @@
-# -*- coding: utf-8 -*-
-#
-#       Copyright (c) Gilles Coissac 2020 <info@gillescoissac.fr>
-#
-#       This program is free software; you can redistribute it and/or modify
-#       it under the terms of the GNU General Public License as published by
-#       the Free Software Foundation; either version 3 of the License, or
-#       (at your option) any later version.
-#
-#       This program is distributed in the hope that it will be useful,
-#       but WITHOUT ANY WARRANTY; without even the implied warranty of
-#       MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#       GNU General Public License for more details.
-#
-#       You should have received a copy of the GNU General Public License
-#       along with this program; if not, write to the Free Software
-#       Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-#       MA 02110-1301, USA.
-#
+# Copyright (c) 2023 - Gilles Coissac
+# See end of file for extended copyright information
+"""|
+==================================
+Pathlib standard library extension
+==================================
+
+This module provides an extension to the standard pathlib library, offering support
+for working with Windows filesystem paths on both Windows and POSIX systems with Wine.
+This module extends and enhances the functionality of the standard pathlib library
+to provide better support for working with Windows paths on different platforms.
+The :class:`UPath` class dynamically determines whether to create a :class:`UPosixPath`,
+:class:`UWindowsPath`, or :class:`UWinePath` object based on the platform and input.
+:class:`UPosixPath` and :class:`UWindowsPath` are designed for use on POSIX and Windows
+systems respectively. :class:`UWinePath` is designed for use on POSIX systems with Wine
+support for handling Windows paths.
+
+|
+
+.. inheritance-diagram:: lyndows.path.UPosixPath lyndows.path.UWindowsPath lyndows.path.UWinePath
+   :parts: -1
+.. centered:: The lyndows.path class hierarchy
+|
+
+.. seealso::
+    For more information, refer to the official Python documentation for `pathlib
+    <https://docs.python.org/3/library/pathlib.html>`_ and related modules.
+"""
+
 from __future__ import annotations
 
 import logging
-import os
 import re
-import shlex
-from functools import wraps
 from pathlib import (
     Path,
     PurePath,
     PurePosixPath,
     PureWindowsPath,
-    WindowsPath,
     _posix_flavour,  # type: ignore
     _windows_flavour,  # type: ignore
     _WindowsFlavour,  # type: ignore
 )
-from types import FunctionType
-from typing import Any, Mapping, Sequence, Type, Union
+from types import FunctionType, GeneratorType
+from typing import Any, Union
 
 import psutil
 
@@ -44,10 +50,26 @@ from lyndows.wine.context import WineContext
 from lyndows.wine.prefix import Prefix
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+
+__all__ = [
+    "UPath",
+    "UPosixPath",
+    "UWindowsPath",
+    "UWinePath",
+    "split_drive",
+    "is_windows_path",
+]
 
 
 def split_drive(path: FilePath) -> tuple[str, str]:
+    """Split a file path into its drive part and the rest of the path.
+
+    Args:
+        path (str|Path): The file path to split.
+
+    Returns:
+        tuple[str, str]: A tuple containing the drive and the rest of the path.
+    """
     path = str(path)
     if match := re.search(r"^\w:[/\\]", path):
         return (path[: match.end() - 1], path[match.end() - 1 :])
@@ -56,9 +78,27 @@ def split_drive(path: FilePath) -> tuple[str, str]:
 
 
 def is_windows_path(path: FilePath) -> bool:
-    # NOTE: * 'file:///home/user/etc' will not match
-    #       * relative paths never match
-    return isinstance(path, (PureWindowsPath, WindowsPath)) or split_drive(path)[0] != ""
+    """Check if the given path is a Windows path.
+
+    Args:
+        path (FilePath): The path to check.
+
+    Returns:
+        bool: True if the path is an instance of PureWindowsPath or if
+        the path starts with a drive letter. Otherwise, on windows if
+        the path is not a PurePosixPath always return True.
+
+    Note:
+        As a consequence, on Posix system, paasing relative paths will always
+        return False, except if the path is an instance of a PureWindowsPath or one
+        of its subclasses.
+    """
+    #  'file:///home/user/etc' will not match
+    return (
+        isinstance(path, (PureWindowsPath))
+        or (split_drive(path)[0] != "")
+        or (on_windows() and not isinstance(path, PurePath))
+    )
 
 
 class _WineFlavour(_WindowsFlavour):
@@ -72,28 +112,19 @@ class UMeta(type):
     def __new__(
         cls, name: str, bases: tuple[type, ...], namespace: dict[str, Any], **kwargs: Any
     ) -> UMeta:
+        namespace = cls.__prepare_api__(bases, namespace, **kwargs)
         return type.__new__(cls, name, bases, namespace)
 
-    def __init__(
-        self,
-        name: str,
-        bases: tuple[type, ...],
-        namespace: Mapping[str, object],
-        **kwargs: Any,
-    ) -> None:
-        self.callby = name
-
     @classmethod
-    def __prepare__(
-        cls, name: str, bases: tuple[type, ...], /, **kwargs: Any
-    ) -> Mapping[str, object]:
+    def __prepare_api__(
+        cls, bases: tuple[type, ...], namespace: dict[str, Any], **kwargs: Any
+    ) -> dict[str, Any]:
         api = kwargs.pop("api", None)
-        namespace = super().__prepare__(name, bases, **kwargs)
         if api is None:
             return namespace
 
-        _bases = [b.__dict__ for b in api]
         namespace["__upath_api__"] = {}  # type: ignore
+        _bases = [b.__dict__ for b in api]
         _bases.append(namespace)
         for base in _bases:
             for name in base:
@@ -110,13 +141,13 @@ class UMeta(type):
 class UPath(Path, metaclass=UMeta):
     """Path class offering support for Wine filesystem.
 
-    Extends pathlib.Path standard library class and represents a filesystem
+    Extends :class:`Path` standard library class and represents a filesystem
     path whith actual I/O methods. On Posix systems,
     from the parts given to the constructor, try to guess the underlying
-    filesystem type returning either a UPosixPath or a UWinePath
-    object. On Windows always returns a UWindowsPath object.
-    You can also instantiate either of these classes directly if supported
-    by your system.
+    filesystem type returning either a :class:`UPosixPath` or a :class:`UWinePath`
+    object. On Windows always returns a :class:`UWindowsPath` object.
+    You can also instantiate either one of these classes directly if it's
+    supported by your system.
     """
 
     __slots__ = ("_winepfx", "_context", "_drive_mapping", "_mount_points", "_posix_path")
@@ -160,7 +191,6 @@ class UPath(Path, metaclass=UMeta):
     def _update_drive_mapping(self) -> None:
         if not self._winepfx:
             return
-        # FIXME:resolve ../drive_c
         self._drive_mapping.clear()
         self._mount_points.clear()
         devices = self._winepfx.pfx / "dosdevices"
@@ -168,7 +198,8 @@ class UPath(Path, metaclass=UMeta):
             self._mount_points[mnt] = ""
         for dev in devices.iterdir():
             if len(dev.name) == 2 and dev.name.endswith(":") and dev.is_symlink:
-                mnt = str(dev.readlink())
+                mnt = dev.readlink()
+                mnt = str(mnt) if mnt.is_absolute() else str((devices / mnt).resolve())
                 self._drive_mapping[dev.name] = mnt
                 if mnt in self._sys_mount_points:
                     self._mount_points[mnt] = dev.name
@@ -185,7 +216,7 @@ class UPath(Path, metaclass=UMeta):
         """Returns the mount point of the current path.
 
         Returns:
-           UPath: The mount point of the current path.
+           :class:`UPath`: The mount point of the current path.
         """
 
         path = self.expanduser().absolute()
@@ -197,7 +228,7 @@ class UPath(Path, metaclass=UMeta):
         """Convert the current path to a native UPath object.
 
         Returns:
-            UPath: Returns either a UPosixPath or a UWindowsPath.
+            :class:`UPath`: Returns either a :class:`UPosixPath` or a :class:`UWindowsPath`.
         """
 
         return self
@@ -206,7 +237,7 @@ class UPath(Path, metaclass=UMeta):
         """Convert the current path to a windows UPath object.
 
         Returns:
-            UPath: Returns either a UWinePath or a UWindowsPath.
+            :class:`UPath`: Returns either a :class:`UWinePath` or a :class:`UWindowsPath`.
         """
         return self
 
@@ -215,14 +246,26 @@ UFilePath = Union[str, UPath]
 
 
 class UPosixPath(UPath, Path, PurePosixPath):
+    """:class:`UPath` subclass for non-Windows systems.
+
+    On a POSIX system, instantiating an :class:`UPosixPath` should return this object.
+    This class requires a valid Wine instalation on the system, otherwise
+    an :class:`EnvironmentError` will be raised.
+    The main purpose of this class is with the help of the :meth:`as_windows` method
+    to provide an :class:`UWinePath` version of this path for further usage within the Wine
+    runtime environment.
+    :class:`UPosixPath` is a subclass of the :class:`Path` class and therfore inherits of all
+    of its methods.
+    """
+
     __slots__ = ()
     _flavour = _posix_flavour
 
     def as_windows(self) -> UWinePath:
-        """Convert the current path as a UWinePath object.
+        """Convert the current path as a :class:`UWinePath` object.
 
         Returns:
-            UWinePath: Returns a UWinePath representing the current path.
+           :class:`UWinePath`: Returns a :class:`UWinePath` representing the current path.
         """
         drive, path = self._map_parts()
         return UWinePath(f"{drive}/{path}")
@@ -233,21 +276,41 @@ class UWindowsPath(UPath, Path, PureWindowsPath):
     _flavour = _windows_flavour
 
 
+def _path_generator(generator):
+    def wrapper():
+        for x in generator:
+            if isinstance(x, UPosixPath):
+                yield UPath(x).as_windows()
+            else:
+                yield x
+
+    return wrapper()
+
+
+def _path_wrapper(func, instance):
+    def wrapper(*args, **kwargs):
+        res = func(instance._posix_path, *args, **kwargs)
+        if isinstance(res, GeneratorType):
+            return _path_generator(res)
+        return UPath(res).as_windows() if type(res) is UPosixPath else res
+
+    return wrapper
+
+
 class UWinePath(UPath, Path, PureWindowsPath, api=(PurePath, UPath)):
-    """An UPath class offering support for Wine filesystem.
+    """An :class:`UPath` subclass offering support for Wine filesystem.
 
     Represent a windows filesystem path on Posix platforms with
     Wine support. This class internally delegates I/O operations
-    to an UPosixPath equivalent of this path
+    to an :class:`UPosixPath` equivalent of this path.
     """
 
     __slots__ = ()
     _flavour = _wine_flavour
 
-    def __new__(cls, *args: FilePath, **kwargs: Any):
-        self = super().__new__(cls, *args, **kwargs)
+    def __init__(self, *args: FilePath, **kwargs: Any) -> None:
+        super().__init__()
         self._posix_path = self.as_native()
-        return self
 
     def __getattribute__(self, attr: str) -> Any:
         cls = object.__getattribute__(self, "__class__")
@@ -258,28 +321,29 @@ class UWinePath(UPath, Path, PureWindowsPath, api=(PurePath, UPath)):
         elif _attr is None or not isinstance(_attr, FunctionType):
             return object.__getattribute__(self, attr)
 
-        @wraps(_attr)
-        def _wrapped(*args, **kwargs):  # type: ignore
-            return _attr(self._posix_path, *args, **kwargs)
+        # @wraps(_attr)
+        # def _wrapped(*args, **kwargs):  # type: ignore
+        #     res = _attr(self._posix_path, *args, **kwargs)
+        #     return UPath(res).as_windows() if type(res) is UPosixPath else res
 
-        return _wrapped
+        return _path_wrapper(_attr, self)
 
     @classmethod
     def home(cls) -> UWinePath:
         """Return a new path pointing to the user's home directory
-        as a WinePath.
+        as an :class:`UWinePath` object.
 
         Returns:
-            UWinePath: A new UWinePath object pointing to the home directory.
+            :class:`UWinePath`: A new :class:`UWinePath` object pointing to the home directory.
         """
         return UPosixPath(Path.home()).as_windows()
 
     def absolute(self) -> UWinePath:
-        """Returns a new UWinePath object that represents the absolute
-        path of the current UWinePath object.
+        """Returns a new :class:`UWinePath` object that represents the absolute
+        path of the current Path object.
 
         Returns:
-            UWinePath: A new UWinePath object that represents the absolute path.
+            :class:`UWinePath`: A new :class:`UWinePath` object that is absolute.
         """
         return (
             self
@@ -290,14 +354,31 @@ class UWinePath(UPath, Path, PureWindowsPath, api=(PurePath, UPath)):
         )
 
     def as_native(self) -> UPosixPath:
-        """Converts the current path object as a UPosixPath.
+        """Converts the current path object as a :class:`UPosixPath` object.
 
         Returns:
-            UPosixPath: A UPosixPath object representing the converted path.
+            :class:`UPosixPath`: A :class:`UPosixPath` object representing the converted path.
         """
-
         path = self.absolute()
         return UPosixPath(
             self._drive_mapping.get(path.drive, "/"),
             path.relative_to(PureWindowsPath(path.anchor)),
         )
+
+
+# Copyright (c) 2023 - Gilles Coissac
+#
+# This file is part of Lyndows library.
+#
+# Lyndows is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published
+# by the Free Software Foundation, either version 3 of the License,
+# or (at your option) any later version.
+#
+# Lyndows is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty
+# of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+# See the GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with Lyndows. If not, see <https://www.gnu.org/licenses/>
