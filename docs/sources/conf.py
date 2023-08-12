@@ -59,23 +59,29 @@ add_module_names = False
 modindex_common_prefix = [f"{project}."]
 
 # SPHINX AUTO-API
-autoapi_dirs = f"../../src/{project}"
+autoapi_dirs = [f"../../src/{project}"]
 autoapi_ignore = []
 autoapi_root = "autoapi"
-autoapi_add_toctree_entry = True
+autoapi_type = "python"
+autoapi_keep_files = False
+autoapi_add_toctree_entry = False
 autoapi_python_class_content = "both"
 autoapi_member_order = "bysource"
 autoapi_python_use_implicit_namespaces = True
 autoapi_file_patterns = ["*.py", "*.pyi", "*.pyx"]
+autoapi_template_dir = "sources/_templates/autoapi"
+autodoc_typehints = "signature"
+autodoc_inherit_docstrings = False
 autoapi_options = [
     "members",
-    # "inherited-members",
+    "inherited-members",
     "undoc-members",
     # "private-members",
     "show-inheritance",
     "show-module-summary",
     # "special-members",
     # "imported-members",
+    # "show-inheritance-diagram"
 ]
 
 

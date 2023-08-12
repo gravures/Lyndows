@@ -6,7 +6,7 @@ Welcome to Lyndows's documentation!
    :caption: Table of Contents 
 
    story/intro
-   Api's documentation <autoapi/index>
+   Api documentation <api/index>
 
 
 Indices and tables
